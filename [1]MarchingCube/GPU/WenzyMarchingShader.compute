@@ -1,0 +1,173 @@
+﻿#include "WenzyMarchTables.compute"
+#include "Noise.compute"
+
+#pragma kernel CalculateTriangle
+#pragma kernel UpdateVoxel
+#pragma kernel ExtractData
+
+struct Triangles {
+	float3 posA, posB, posC;
+	float3 normalA, normalB, normalC;
+};
+
+RWTexture3D<float> VoxelTexture;
+int GridRes;
+float Time;
+float NoiseInterval;
+float IsoLevel;
+bool EnableSmooth;
+float3 CenterPos;
+float GridW;
+int TriangleCount;
+
+
+float Random(float2 st)
+{
+	return frac(sin(dot(st.xy, float2(12.9898, 78.233)))* 43758.5453123);
+}
+
+[numthreads(1, 1, 1)]
+void UpdateVoxel(uint3 id : SV_DispatchThreadID) {
+	VoxelTexture[id.xyz] = (snoise((float3(id.xyz) + float3(Time, 0, 0))* NoiseInterval) + 1.0)/2.0;
+}
+
+RWStructuredBuffer<float3> PosBuffer, NormalBuffer;
+RWStructuredBuffer<int> IndexBuffer;
+RWStructuredBuffer<Triangles> NewTriBuffer;
+AppendStructuredBuffer<Triangles> Tribuffer;
+
+[numthreads(10, 1, 1)]
+void ExtractData(uint3 id : SV_DispatchThreadID) {
+	if (id.x < TriangleCount) {
+		PosBuffer[id.x * 3] = NewTriBuffer[id.x].posA;
+		PosBuffer[id.x * 3 + 1] = NewTriBuffer[id.x].posB;
+		PosBuffer[id.x * 3 + 2] = NewTriBuffer[id.x].posC;
+		NormalBuffer[id.x * 3] = NewTriBuffer[id.x].normalA;
+		NormalBuffer[id.x * 3 + 1] = NewTriBuffer[id.x].normalB;
+		NormalBuffer[id.x * 3 + 2] = NewTriBuffer[id.x].normalC;
+		IndexBuffer[id.x * 3] = id.x * 3;
+		IndexBuffer[id.x * 3 + 1] = id.x * 3 + 1;
+		IndexBuffer[id.x * 3 + 2] = id.x * 3 + 2;
+	}
+}
+
+[numthreads(8, 8, 8)]
+void CalculateTriangle(uint3 id : SV_DispatchThreadID)
+{
+	float valCollection[8];
+	valCollection[0] = VoxelTexture[id.xyz + uint3(0, 0, 1)];
+	valCollection[1] = VoxelTexture[id.xyz + uint3(1, 0, 1)];
+	valCollection[2] = VoxelTexture[id.xyz + uint3(1, 0, 0)];
+	valCollection[3] = VoxelTexture[id.xyz + uint3(0, 0, 0)];
+	valCollection[4] = VoxelTexture[id.xyz + uint3(0, 1, 1)]; // 4
+	valCollection[5] = VoxelTexture[id.xyz + uint3(1, 1, 1)]; // 5
+	valCollection[6] = VoxelTexture[id.xyz + uint3(1, 1, 0)]; // 6
+	valCollection[7] = VoxelTexture[id.xyz + uint3(0, 1, 0)]; // 7
+
+	int index = 0;
+	for (int l = 0; l < 8; l++)
+	{
+		if (valCollection[l] > IsoLevel)
+			index |= 1 << l;
+	}
+
+	float3 dirOffset, finalPos,finalNormal,centerOffset;
+	float voxelW = GridW / GridRes;
+
+	centerOffset = float3(id.xyz) * voxelW + CenterPos - float3(1,1,1) * GridW / 2;
+	int connectIndex1, connectIndex2;
+	double lerpRatio;
+
+
+	float3 p1, p2;
+
+	for (int l = 0; l < 5; l++)
+	{
+		if (TriangleTable[index][l * 3] >= 0)
+		{
+			Triangles tempTri;
+			for (int k = 0; k < 3; k++) {
+				int newIndex = l * 3 + k;
+				dirOffset.x = EdgePointDir[TriangleTable[index][newIndex]][0];
+				dirOffset.y = EdgePointDir[TriangleTable[index][newIndex]][1];
+				dirOffset.z = EdgePointDir[TriangleTable[index][newIndex]][2];
+
+				connectIndex1 = ConnectionMap[TriangleTable[index][newIndex]][0];
+				connectIndex2 = ConnectionMap[TriangleTable[index][newIndex]][1];
+
+				p1.x = VertexPointDir[connectIndex1][0];
+				p1.y = VertexPointDir[connectIndex1][1];
+				p1.z = VertexPointDir[connectIndex1][2];
+
+				p2.x = VertexPointDir[connectIndex2][0];
+				p2.y = VertexPointDir[connectIndex2][1];
+				p2.z = VertexPointDir[connectIndex2][2];
+
+				p1 *= voxelW;
+				p2 *= voxelW;
+
+				p1 /= 2.0f;
+				p2 /= 2.0f;
+				// 根据论文的公式计算插值
+				finalPos = p1 + (IsoLevel - valCollection[connectIndex1]) * (p2 - p1) / (valCollection[connectIndex2] - valCollection[connectIndex1]);
+				lerpRatio = distance(p1, finalPos) / distance(p1, p2);
+				finalPos += centerOffset;
+
+				if (k == 0) {
+					tempTri.posC = finalPos;
+				}
+				else if (k == 1) {
+					tempTri.posB = finalPos;
+				}
+				else if (k == 2) {
+					tempTri.posA = finalPos;
+				}
+
+				float3 normal1, normal2;
+				if (EnableSmooth) {
+
+					normal1.x = VoxelTexture[id.xyz + uint3(IndexMap[connectIndex1][0] - 1, IndexMap[connectIndex1][1], IndexMap[connectIndex1][2])]
+						- VoxelTexture[id.xyz + uint3(IndexMap[connectIndex1][0] + 1, IndexMap[connectIndex1][1], IndexMap[connectIndex1][2])];
+
+					normal1.y = VoxelTexture[id.xyz + uint3(IndexMap[connectIndex1][0], IndexMap[connectIndex1][1] - 1, IndexMap[connectIndex1][2])]
+						- VoxelTexture[id.xyz + uint3(IndexMap[connectIndex1][0], IndexMap[connectIndex1][1] + 1, IndexMap[connectIndex1][2])];
+
+					normal1.z = VoxelTexture[id.xyz + uint3(IndexMap[connectIndex1][0], IndexMap[connectIndex1][1], IndexMap[connectIndex1][2] - 1)]
+						- VoxelTexture[id.xyz + uint3(IndexMap[connectIndex1][0], IndexMap[connectIndex1][1], IndexMap[connectIndex1][2] + 1)];
+
+					normal2.x = VoxelTexture[id.xyz + uint3(IndexMap[connectIndex2][0] - 1, IndexMap[connectIndex2][1], IndexMap[connectIndex2][2])]
+						- VoxelTexture[id.xyz + uint3(IndexMap[connectIndex2][0] + 1, IndexMap[connectIndex2][1], IndexMap[connectIndex2][2])];
+
+					normal2.y = VoxelTexture[id.xyz + uint3(IndexMap[connectIndex2][0], IndexMap[connectIndex2][1] - 1, IndexMap[connectIndex2][2])]
+						- VoxelTexture[id.xyz + uint3(IndexMap[connectIndex2][0], IndexMap[connectIndex2][1] + 1, IndexMap[connectIndex2][2])];
+
+					normal2.z = VoxelTexture[id.xyz + uint3(IndexMap[connectIndex2][0], IndexMap[connectIndex2][1], IndexMap[connectIndex2][2] - 1)]
+						- VoxelTexture[id.xyz + uint3(IndexMap[connectIndex2][0], IndexMap[connectIndex2][1], IndexMap[connectIndex2][2] + 1)];
+
+					normal1 = normalize(normal1);
+					normal2 = normalize(normal2);
+					finalNormal = (1-lerpRatio) * normal1 + lerpRatio * normal2;
+
+
+					if (k == 0) {
+						tempTri.normalC = finalNormal;
+					}
+					else if (k == 1) {
+						tempTri.normalB = finalNormal;
+					}
+					else if (k == 2) {
+						tempTri.normalA = finalNormal;
+					}
+				}
+			}
+
+			if (!EnableSmooth) {
+				float3 tempNormal = cross(tempTri.posB - tempTri.posA, tempTri.posC - tempTri.posA);
+				tempTri.normalA = tempNormal;
+				tempTri.normalB = tempNormal;
+				tempTri.normalC = tempNormal;
+			}
+			Tribuffer.Append(tempTri);
+		}
+	}
+}
