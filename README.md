@@ -5,4 +5,4 @@ Here are some source code about marching cubes on Github.It includes two version
 the scene include two main scripts,can easily assign different material to acheive different effect.
 The gif has assigned a SSS material for testing.
 
-![](https://gfycat.com/requiredpoorgreendarnerdragonfly)
+![](https://media.giphy.com/media/QX1wUoQwqGlqxvEhW5/giphy.gif)
