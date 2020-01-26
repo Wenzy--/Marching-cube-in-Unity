@@ -8,8 +8,6 @@ Test440(https://twitter.com/i/status/1169084756908105729).
 Any ideas to optimize the GPU version is really appreciate.
 
 * Performance: In Gpu version ,run 80 * 80 * 80 voxel at 80 fps in average.
-Recommend video):https://www.youtube.com/watch?v=M3iI2l0ltbE
-
 
 * Recommend link
     * https://www.youtube.com/watch?v=M3iI2l0ltbE
